@@ -1,0 +1,3 @@
+[submodule "llm-typing-planner"]
+	path = llm-typing-planner
+	url = git@github.com:brennanmk/llm-typing-planner.git

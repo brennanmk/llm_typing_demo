@@ -1,0 +1,4 @@
+---
+ObjectDetection[] detected_objects
+---
+float32 completion_percentage

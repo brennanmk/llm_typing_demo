@@ -1,0 +1,7 @@
+geometry_msgs/PoseStamped target_pose
+float64 approach_distance
+---
+bool success
+string message
+---
+float32 progress

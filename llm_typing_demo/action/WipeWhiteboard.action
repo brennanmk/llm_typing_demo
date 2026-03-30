@@ -1,0 +1,5 @@
+ObjectDetection whiteboard
+---
+bool success
+---
+float32 completion_percentage

@@ -1,0 +1,6 @@
+Point position
+---
+bool success
+string current_phase
+---
+string current_phase
