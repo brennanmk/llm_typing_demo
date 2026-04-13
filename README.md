@@ -15,8 +15,9 @@ dependencies are available in the LLM Typing Planners `requirements.txt`
 
 ## Submissions 
 Project System Architecture Final Draft & Preliminary Implementation: https://github.com/brennanmk/llm_typing_demo/commit/6b696dc94ff4e3edf7348a2a51f574622dd5fe14
-Incorporate MoveIt! & Nav2 into Project: Latest Commit 
-
+Incorporate MoveIt! & Nav2 into Project: https://github.com/brennanmk/llm_typing_demo/commit/47ef5e75028a7ebb0b764334a24c9c900ba59b1f
+Incorporate Perception into Project: Latest commit
+ 
 ## ROS Support
 This assignment was written for ROS Kilted; as such, it will not work
 on older versions like Jazzy and Humble.
