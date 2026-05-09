@@ -1,4 +1,3 @@
 ---
-ObjectDetection[] detected_objects
+bool success
 ---
-float32 completion_percentage

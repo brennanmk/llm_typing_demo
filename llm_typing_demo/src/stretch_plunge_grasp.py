@@ -1,209 +1,211 @@
 #!/usr/bin/env python3
 """
-Implements a node that consists of an action server. This action
-server implements a plunge grasp, which involves moving the arm above
-the target position and plunging to pick up the object.
-
-This variant drives the Stretch robot's joint trajectory controller directly.
+Implements a node that contains an action server which implements a
+plunge grasp. This involves moving the arm above a target position and
+plunging to pick up the object. In the case of the stretch, this also
+involves moving the base.
 """
 
+import time
 import rclpy
-from rclpy.node import Node
-from rclpy.executors import ExternalShutdownException
-from rclpy.action import ActionServer, ActionClient
+import tf2_geometry_msgs
+from rclpy.action import ActionServer
 from rclpy.action.server import ServerGoalHandle
-from control_msgs.action import FollowJointTrajectory
-from trajectory_msgs.msg import JointTrajectoryPoint
-from builtin_interfaces.msg import Duration
-import math
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
+from stretch_alignment_base import StretchAlignmentBaseNode
 
 from llm_typing_demo.action import PlungeGrasp
 
+_GRASP_WRIST_YAW = 1.57
+_GRASP_WRIST_PITCH = -1.4
+_GRASP_GRIPPER_CLOSE = -0.35
+_GRASP_ARM_STANDOFF = 0.06
+_LIFT_EFFORT_THRESHOLD = 35.0
 
-_GRASP_WRIST_YAW = math.pi / 2  # arm pointing forward
-_GRASP_WRIST_PITCH = -math.pi / 2  # gripper facing down
-_READY_WRIST_PITCH = 0.0  # wrist level, tool-ready position
 
-
-class StretchPlungeGraspNode(Node):
-    """Action server that picks up an object using a plunge grasp. Also pitches tool into ready position."""
+class StretchPlungeGraspNode(StretchAlignmentBaseNode):
+    """Action server that picks up an object with a top-down plunge grasp on Stretch."""
 
     def __init__(self) -> None:
         super().__init__("stretch_plunge_grasp_node")
 
+        # the homing sequence has a predictable error, by modifying this param we can account for that error, likely due to belt wearout
+        self.declare_parameter("plunge_depth_offset", 0.06)
+
         self._action_server = ActionServer(
-            self, PlungeGrasp, "stretch_plunge_grasp", self.execute_callback
+            self,
+            PlungeGrasp,
+            "stretch_plunge_grasp",
+            self.execute_callback,
+            callback_group=self._callback_group,
         )
 
-        self._trajectory_client = ActionClient(
-            self, FollowJointTrajectory, "/stretch_controller/follow_joint_trajectory"
-        )
-
-    async def execute_callback(
-        self, goal_handle: ServerGoalHandle
-    ) -> PlungeGrasp.Result:
+    def execute_callback(self, goal_handle: ServerGoalHandle) -> PlungeGrasp.Result:
         """Execute a plunge grasp at the requested position.
 
-        :param goal_handle: ROS 2 action goal handle.
-        :return: PlungeGrasp.Result.
+        Moves to a safe travel pose, aligns the base, extends the arm
+        over the object, descends until contact is made, closes the
+        gripper, and returns to the start pose.
+
+        :param goal_handle: ROS 2 action goal handle carrying the target
+        :return: PlungeGrasp.Result returns success on completion.
         """
-        self.get_logger().info("Executing Stretch plunge grasp...")
+
         feedback = PlungeGrasp.Feedback()
         result = PlungeGrasp.Result()
 
-        if not self._trajectory_client.wait_for_server(timeout_sec=2.0):
-            self.get_logger().error("Stretch trajectory server not available.")
+        def publish_feedback(msg):
+            feedback.current_phase = msg
+            goal_handle.publish_feedback(feedback)
+
+        if not self._wait_for_joint_states():
             goal_handle.abort()
             return result
 
-        x = goal_handle.request.position.x
-        y = goal_handle.request.position.y
-        z = goal_handle.request.position.z
+        start_pose = self._get_map_pose()
 
-        arm_extension = math.sqrt(x**2 + y**2)
+        original_map_pt = tf2_geometry_msgs.PointStamped()
+        original_map_pt.header.frame_id = "map"
+        original_map_pt.point = goal_handle.request.position
 
-        # Open Gripper and hover above target
-        feedback.current_phase = "Hovering above target"
-        goal_handle.publish_feedback(feedback)
-
-        hover_z = z + 0.15
-
-        hover_goal = self.build_trajectory(
-            lift_z=hover_z,
-            arm_extension=arm_extension,
-            wrist_yaw=_GRASP_WRIST_YAW,
-            wrist_pitch=_GRASP_WRIST_PITCH,
-            gripper_pos=0.10,
-            duration_sec=9,
+        # move gripper up so it does not hit table
+        safe_lift_z = max(self._read_joint("joint_lift") or 0.5, 0.85)
+        publish_feedback("Moving to travel pose")
+        self.send_trajectory_sync(
+            self.build_trajectory(
+                safe_lift_z, 0.0, _GRASP_WRIST_YAW, _GRASP_WRIST_PITCH, 0.10, 3.0
+            )
         )
-        trajectory_goal_handle = await self._trajectory_client.send_goal_async(
-            hover_goal
+
+        # Align robot to object
+        self.align_and_verify(original_map_pt, feedback_cb=publish_feedback)
+
+        # find target extension and grasp height
+        grasp_center_tf = self.tf_buffer.lookup_transform(
+            "base_link", "link_grasp_center", rclpy.time.Time()
         )
-        await trajectory_goal_handle.get_result_async()
+        map_to_base_tf = self.tf_buffer.lookup_transform(
+            "base_link", "map", rclpy.time.Time()
+        )
+        target_in_base_frame = tf2_geometry_msgs.do_transform_point(
+            original_map_pt, map_to_base_tf
+        )
+
+        arm_extension = max(
+            0.0,
+            min(
+                grasp_center_tf.transform.translation.y
+                - target_in_base_frame.point.y
+                - _GRASP_ARM_STANDOFF,
+                0.50,
+            ),
+        )
+        lift_height_to_grasp = grasp_center_tf.transform.translation.z - (
+            self._read_joint("joint_lift") or safe_lift_z
+        )
+
+        plunge_depth_offset = self.get_parameter("plunge_depth_offset").value
+        ideal_hover = target_in_base_frame.point.z - lift_height_to_grasp + 0.15
+        ideal_plunge = (
+            target_in_base_frame.point.z - lift_height_to_grasp - plunge_depth_offset
+        )
+
+        # clamp to ensure valid poses
+        hover_z = max(0.10, ideal_hover)
+        plunge_z = max(0.10, ideal_plunge)
+
+        # approach
+        publish_feedback("Extending arm high above target")
+        self.send_trajectory_sync(
+            self.build_trajectory(
+                safe_lift_z,
+                arm_extension,
+                _GRASP_WRIST_YAW,
+                _GRASP_WRIST_PITCH,
+                0.10,
+                3.0,
+            )
+        )
+
+        publish_feedback("Dropping mast to hover position")
+        self.send_trajectory_sync(
+            self.build_trajectory(
+                hover_z, arm_extension, _GRASP_WRIST_YAW, _GRASP_WRIST_PITCH, 0.10, 2.0
+            )
+        )
 
         # plunge
-        feedback.current_phase = "Plunging to grasp depth"
-        goal_handle.publish_feedback(feedback)
-
-        plunge_z = z - 0.02
-
+        publish_feedback("Plunging...")
         plunge_goal = self.build_trajectory(
-            lift_z=plunge_z,
-            arm_extension=arm_extension,
-            wrist_yaw=_GRASP_WRIST_YAW,
-            wrist_pitch=_GRASP_WRIST_PITCH,
-            gripper_pos=0.10,
-            duration_sec=2,
+            plunge_z, arm_extension, _GRASP_WRIST_YAW, _GRASP_WRIST_PITCH, 0.10, 2.0
         )
-        trajectory_goal_handle = await self._trajectory_client.send_goal_async(
-            plunge_goal
-        )
-        await trajectory_goal_handle.get_result_async()
 
-        # Close Gripper
-        feedback.current_phase = "Closing gripper"
-        goal_handle.publish_feedback(feedback)
+        goal_future = self._trajectory_client.send_goal_async(plunge_goal)
+        rclpy.spin_until_future_complete(self, goal_future)
+        trajectory_handle = goal_future.result()
+        if not trajectory_handle.accepted:
+            self.get_logger().error("Plunge goal rejected")
+            goal_handle.abort()
+            return result
 
-        grasp_goal = self.build_trajectory(
-            lift_z=plunge_z,
-            arm_extension=arm_extension,
-            wrist_yaw=_GRASP_WRIST_YAW,
-            wrist_pitch=_GRASP_WRIST_PITCH,
-            gripper_pos=0.0,
-            duration_sec=2,
-        )
-        trajectory_goal_handle = await self._trajectory_client.send_goal_async(
-            grasp_goal
-        )
-        await trajectory_goal_handle.get_result_async()
+        res_future = trajectory_handle.get_result_async()
 
-        # lift object
-        feedback.current_phase = "Lifting object"
-        goal_handle.publish_feedback(feedback)
+        # press down until we hit something
+        contact_detected = False
+        while not res_future.done():
+            effort = self._read_joint_effort("joint_lift")
+            if effort and abs(effort) > _LIFT_EFFORT_THRESHOLD:
+                self.get_logger().warn(
+                    f"Contact detected! Lift effort spiked to {abs(effort):.2f}"
+                )
+                trajectory_handle.cancel_goal_async()
+                contact_detected = True
+                break
+            time.sleep(0.05)
 
-        retreat_goal = self.build_trajectory(
-            lift_z=hover_z,
-            arm_extension=arm_extension,
-            wrist_yaw=_GRASP_WRIST_YAW,
-            wrist_pitch=_GRASP_WRIST_PITCH,
-            gripper_pos=0.0,
-            duration_sec=2,
-        )
-        trajectory_goal_handle = await self._trajectory_client.send_goal_async(
-            retreat_goal
-        )
-        await trajectory_goal_handle.get_result_async()
+        final_lift_z = self._read_joint("joint_lift") if contact_detected else plunge_z
 
-        # Pitch wrist forward to tool-ready position
-        feedback.current_phase = "Readying tool"
-        goal_handle.publish_feedback(feedback)
+        # grasp
+        publish_feedback("Closing gripper")
+        self.send_trajectory_sync(
+            self.build_trajectory(
+                final_lift_z,
+                arm_extension,
+                _GRASP_WRIST_YAW,
+                _GRASP_WRIST_PITCH,
+                _GRASP_GRIPPER_CLOSE,
+                2.0,
+            )
+        )
 
-        ready_goal = self.build_trajectory(
-            lift_z=hover_z,
-            arm_extension=arm_extension,
-            wrist_yaw=_GRASP_WRIST_YAW,
-            wrist_pitch=_READY_WRIST_PITCH,
-            gripper_pos=0.0,
-            duration_sec=2,
+        # lift
+        publish_feedback("Lifting object")
+        self.send_trajectory_sync(
+            self.build_trajectory(
+                hover_z,
+                0.0,
+                _GRASP_WRIST_YAW,
+                _GRASP_WRIST_PITCH,
+                _GRASP_GRIPPER_CLOSE,
+                3.0,
+            )
         )
-        trajectory_goal_handle = await self._trajectory_client.send_goal_async(
-            ready_goal
-        )
-        await trajectory_goal_handle.get_result_async()
+
+        publish_feedback("Returning to start pose")
+        self._return_to_pose(start_pose)
 
         result.success = True
-        result.current_phase = "Plunge grasp completed successfully."
         goal_handle.succeed()
         return result
-
-    def build_trajectory(
-        self,
-        lift_z: float,
-        arm_extension: float,
-        wrist_yaw: float,
-        wrist_pitch: float,
-        gripper_pos: float,
-        duration_sec: int = 4,
-    ) -> FollowJointTrajectory.Goal:
-        """Build a single-point FollowJointTrajectory goal for the Stretch arm.
-
-        :param lift_z: Target lift height in meters.
-        :param arm_extension: Target arm extension.
-        :param wrist_yaw: Target wrist yaw in radians.
-        :param wrist_pitch: Target wrist pitch in radians.
-        :param gripper_pos: Total gripper opening.
-        :param duration_sec: Time allowed to reach the target position in seconds.
-        :return: FollowJointTrajectory.Goal.
-        """
-        goal_msg = FollowJointTrajectory.Goal()
-        goal_msg.trajectory.joint_names = [
-            "joint_lift",
-            "joint_arm",
-            "joint_wrist_yaw",
-            "joint_wrist_pitch",
-            "gripper_aperture",
-        ]
-
-        point = JointTrajectoryPoint()
-        point.positions = [
-            lift_z,
-            arm_extension,
-            wrist_yaw,
-            wrist_pitch,
-            gripper_pos,
-        ]
-
-        point.time_from_start = Duration(sec=duration_sec, nanosec=0)
-        goal_msg.trajectory.points = [point]
-
-        return goal_msg
 
 
 if __name__ == "__main__":
     rclpy.init()
+    executor = MultiThreadedExecutor()
     node = StretchPlungeGraspNode()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:

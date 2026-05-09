@@ -1,2 +1,4 @@
 ultralytics
-numpy
+numpy<2
+transformers
+Pillow

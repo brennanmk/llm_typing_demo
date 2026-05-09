@@ -1,0 +1,5 @@
+ObjectDetection board
+---
+bool success
+---
+float32 completion_percentage

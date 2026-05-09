@@ -33,28 +33,47 @@ class MoveItPlungeGraspNode(Node):
     def __init__(self) -> None:
         super().__init__("moveit_plunge_grasp_node")
 
-        # param setup
-        self.declare_parameter("planning_group", "arm")
+        self.declare_parameter("planning_group", "arm")  # MoveIt planning group name
         self.declare_parameter("base_link", "base_link")
         self.declare_parameter("ee_link", "end_effector_link")
         self.declare_parameter(
             "gripper_action", "/gen3_lite_2f_gripper_controller/gripper_cmd"
+        )  # action server for gripper open/close
+        self.declare_parameter(
+            "hover_offset", 0.15
+        )  # meters above target to approach before plunging
+        self.declare_parameter(
+            "grasp_depth", 0.02
+        )  # meters below target z to plunge for a firm grasp
+        self.declare_parameter(
+            "gripper_timeout", 15.0
+        )  # seconds to wait for gripper action to complete
+
+        self._gripper_timeout = (
+            self.get_parameter("gripper_timeout").get_parameter_value().double_value
         )
-        self.declare_parameter("hover_offset", 0.15)
-        self.declare_parameter("grasp_depth", 0.02)
-        self.declare_parameter("gripper_timeout", 15.0)
-
-        self._gripper_timeout = self.get_parameter("gripper_timeout").get_parameter_value().double_value
-        self._planning_group = self.get_parameter("planning_group").get_parameter_value().string_value
-        self._base_link = self.get_parameter("base_link").get_parameter_value().string_value
+        self._planning_group = (
+            self.get_parameter("planning_group").get_parameter_value().string_value
+        )
+        self._base_link = (
+            self.get_parameter("base_link").get_parameter_value().string_value
+        )
         self._ee_link = self.get_parameter("ee_link").get_parameter_value().string_value
-        gripper_action = self.get_parameter("gripper_action").get_parameter_value().string_value
-        self._hover_offset = self.get_parameter("hover_offset").get_parameter_value().double_value
-        self._grasp_depth = self.get_parameter("grasp_depth").get_parameter_value().double_value
+        gripper_action = (
+            self.get_parameter("gripper_action").get_parameter_value().string_value
+        )
+        self._hover_offset = (
+            self.get_parameter("hover_offset").get_parameter_value().double_value
+        )
+        self._grasp_depth = (
+            self.get_parameter("grasp_depth").get_parameter_value().double_value
+        )
 
-        # moveitpy actually creates its own node
+        # moveitpy actually creates its own node, kind of odd but it works.
         self._moveit_py = MoveItPy(node_name="moveit_py_node")
-        self._arm_component = self._moveit_py.get_planning_component(self._planning_group)
+        self._arm_component = self._moveit_py.get_planning_component(
+            self._planning_group
+        )
 
         # action server is reentrant, so we need to manually lock execution
         self._execution_lock = Lock()
@@ -80,7 +99,12 @@ class MoveItPlungeGraspNode(Node):
         )
 
     def _send_gripper(self, position: float, max_effort: float = 50.0) -> bool:
-        """Send a GripperCommand goal and block until complete."""
+        """Send a GripperCommand goal and block until complete.
+
+        :param position: Target gripper position (0.0 = open, ~0.8 = closed).
+        :param max_effort: Maximum effort in Newtons to apply.
+        :return: True if the gripper action completed successfully, False otherwise.
+        """
         if not self._gripper_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error("Gripper action server not available")
             return False
@@ -110,7 +134,13 @@ class MoveItPlungeGraspNode(Node):
         return success_ref[0]
 
     def _move_to(self, x: float, y: float, z: float) -> bool:
-        """Blocking moveit_py move."""
+        """Plan and execute arm move, blocks until done.
+
+        :param x: Target x position in the base frame in meters.
+        :param y: Target y position in the base frame in meters.
+        :param z: Target z position in the base frame in meters.
+        :return: True if planning and execution both succeeded, False otherwise.
+        """
         pose_goal = PoseStamped()
         pose_goal.header.frame_id = self._base_link
         pose_goal.pose.position.x = float(x)
@@ -122,23 +152,29 @@ class MoveItPlungeGraspNode(Node):
         pose_goal.pose.orientation.w = _DOWN_QUAT[3]
 
         self._arm_component.set_start_state_to_current_state()
-        self._arm_component.set_goal_state(pose_stamped_msg=pose_goal, pose_link=self._ee_link)
+        self._arm_component.set_goal_state(
+            pose_stamped_msg=pose_goal, pose_link=self._ee_link
+        )
 
         plan_result = self._arm_component.plan()
 
         if plan_result:
             success = self._moveit_py.execute(plan_result.trajectory, controllers=[])
             if not success:
-                self.get_logger().error(f"MoveIt execution failed for target ({x:.2f}, {y:.2f}, {z:.2f})")
+                self.get_logger().error(
+                    f"MoveIt execution failed for target ({x:.2f}, {y:.2f}, {z:.2f})"
+                )
             return success
         else:
-            self.get_logger().error(f"moveit_py failed to find a valid plan for target ({x:.2f}, {y:.2f}, {z:.2f})")
+            self.get_logger().error(
+                f"moveit_py failed to find a valid plan for target ({x:.2f}, {y:.2f}, {z:.2f})"
+            )
             return False
 
     def execute_callback(self, goal_handle: ServerGoalHandle) -> PlungeGrasp.Result:
         """Execute a plunge grasp at the requested position.
 
-        :param goal_handle: ROS 2 action goal handle.
+        :param goal_handle: goal handle.
         :return: PlungeGrasp.Result.
         """
 
@@ -190,6 +226,12 @@ class MoveItPlungeGraspNode(Node):
                 result.current_phase = "MoveIt plunge grasp completed successfully."
                 goal_handle.succeed()
                 return result
+
+            except Exception as e:
+                self.get_logger().error(f"Plunge grasp failed: {e}")
+                goal_handle.abort()
+                return result
+
 
 if __name__ == "__main__":
     rclpy.init()

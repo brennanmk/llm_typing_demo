@@ -4,17 +4,39 @@
   <name>llm_typing_demo</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="root@todo.todo">root</maintainer>
+  <maintainer email="bmille12@tufts.edu">bmk</maintainer>
   <license>TODO: License declaration</license>
 
-  <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <!-- ROS 2 client library -->
+  <depend>rclpy</depend>
 
+  <!-- Message / action packages -->
+  <depend>action_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>control_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav2_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>trajectory_msgs</depend>
+
+  <!-- TF2 -->
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
-  
+
+  <!-- Vision utilities -->
+  <depend>cv_bridge</depend>
+  <depend>image_geometry</depend>
+  <depend>message_filters</depend>
+
+  <!-- MoveIt 2 -->
+  <depend>moveit_py</depend>
+
+  <!-- Python system packages (rosdep) -->
+  <depend>python3-numpy</depend>
+  <depend>python3-scipy</depend>
+
+  <!-- Interface generation -->
   <build_depend>rosidl_default_generators</build_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
   <member_of_group>rosidl_interface_packages</member_of_group>

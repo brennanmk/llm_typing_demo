@@ -1,6 +1,6 @@
 string belief_id
+string pddl_name
 string class_name
-float32 confidence
 float64 center_x
 float64 center_y
 float64 center_z
