@@ -17,6 +17,7 @@ eraser like item, and wipe off a surface.
 
 ## Setup
 - NOTE: While this project does not strictly require a GPU, one is highly recommended to run inference for DINO and SAM.
+- Ensure that `control_msgs` and `image_geometry` are installed with `sudo apt install ros-humble-control-msgs ros-humble-image-geometry` 
 - Make sure that the ROS package is cloned in a ROS workspace on all systems (the robot + an external machine, as the stretch's onboard computer is to weak for inference). Build with `colcon build` and source `install/setup.bash`
 - Ensure that all of the packages inside `llm_typing_demo/requirements.txt` are installed, this can be done with `pip install -r requirements.txt`
 - SAM and DINO are pulled from huggingface, and so it might be beneficial to set a `HF_TOKEN` for faster downloads
@@ -32,7 +33,7 @@ dependencies are available in the LLM Typing Planners `requirements.txt`
 - Make sure that all computers are on a shared middleware (CycloneDDS is recommended), and have matching DOMAIN_ID's 
 - On the streth re1's computer run `ros2 launch llm_typing_demo stretch_bringup.launch.py` to bring the robot up
 - On another machine (preferably with a GPU) run `ros2 launch llm_typing_demo stretch_demo.launch.py` to bring the robot up
-- To run the demo executor (on either machine) run `ros2 run llm_typing_demo demo_executor.py` 
+- To run the demo executor (on either machine) run `ros2 run llm_typing_demo plan_executor.py` 
 
 ## Submissions 
 - Project System Architecture Final Draft & Preliminary Implementation: https://github.com/brennanmk/llm_typing_demo/commit/6b696dc94ff4e3edf7348a2a51f574622dd5fe14
@@ -40,7 +41,7 @@ dependencies are available in the LLM Typing Planners `requirements.txt`
 - Incorporate Perception into Project: https://github.com/brennanmk/llm_typing_demo/commit/b88e9964fed8edf6cc28cf39b5ffa8146a7dc967
 -  Incorporate Supervisory Control into Project: https://github.com/brennanmk/llm_typing_demo/commit/336ccae85934bf4ad2a5410037c03cf24ffc71e3 
 -  Add advanced custom component to project: https://github.com/brennanmk/llm_typing_demo/commit/995496acc03eb6cff3fe3198dd5cfa238e78553e 
-- Final submission: latest
+- Final submission: latest commit
 
 ## Project Components
 ### Nav2
